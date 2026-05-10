@@ -688,6 +688,8 @@ void RemoteDebugger::poll_events(bool p_is_idle) {
 
 	// Reload scripts during idle poll only.
 	if (p_is_idle) {
+		const bool was_reload_all = reload_all_scripts;
+		Array reloaded_paths;
 		if (reload_all_scripts) {
 			for (int i = 0; i < ScriptServer::get_language_count(); i++) {
 				ScriptServer::get_language(i)->reload_all_scripts();
@@ -710,10 +712,19 @@ void RemoteDebugger::poll_events(bool p_is_idle) {
 				ERR_CONTINUE_MSG(err != OK, vformat("Could not reload script '%s': %s", path, error_names[err]));
 				ERR_CONTINUE_MSG(script.is_null(), vformat("Could not reload script '%s': Not a script!", path, error_names[err]));
 				scripts_to_reload.push_back(script);
+				reloaded_paths.push_back(path);
 			}
 			for (int i = 0; i < ScriptServer::get_language_count(); i++) {
 				ScriptServer::get_language(i)->reload_scripts(scripts_to_reload, true);
 			}
+		}
+		if (was_reload_all || !reloaded_paths.is_empty()) {
+			// Notify the editor (or any debugger client) that a hot-reload pass just ran in
+			// the running scene, so it can surface this in the UI / log / debugger panel.
+			Array msg;
+			msg.push_back(was_reload_all);
+			msg.push_back(reloaded_paths);
+			send_message("scripts:reloaded", msg);
 		}
 		script_paths_to_reload.clear();
 	}

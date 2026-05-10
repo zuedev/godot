@@ -41,6 +41,92 @@
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 
+namespace {
+// Snapshot of a member function's externally observable signature, used to detect
+// incompatible signature changes during a hot-reload (keep_state) recompile.
+struct HotReloadFunctionSig {
+	int arg_count = 0;
+	int default_arg_count = 0;
+	bool is_static = false;
+	bool is_vararg = false;
+};
+
+struct HotReloadScriptSig {
+	HashMap<StringName, HotReloadFunctionSig> functions;
+	HashMap<StringName, HotReloadScriptSig> subclasses;
+};
+
+static HotReloadScriptSig _capture_hot_reload_signatures(const GDScript *p_script) {
+	HotReloadScriptSig info;
+	if (p_script == nullptr) {
+		return info;
+	}
+	for (const KeyValue<StringName, GDScriptFunction *> &E : p_script->get_member_functions()) {
+		const GDScriptFunction *func = E.value;
+		if (func == nullptr) {
+			continue;
+		}
+		HotReloadFunctionSig sig;
+		sig.arg_count = func->get_argument_count();
+		sig.default_arg_count = func->get_method_info().default_arguments.size();
+		sig.is_static = func->is_static();
+		sig.is_vararg = func->is_vararg();
+		info.functions.insert(E.key, sig);
+	}
+	for (const KeyValue<StringName, Ref<GDScript>> &KV : p_script->get_subclasses()) {
+		info.subclasses.insert(KV.key, _capture_hot_reload_signatures(KV.value.ptr()));
+	}
+	return info;
+}
+
+static void _warn_hot_reload_signature_changes(const String &p_path, const String &p_qualified_name, const HotReloadScriptSig &p_old, const GDScript *p_new_script) {
+	if (p_new_script == nullptr) {
+		return;
+	}
+	const HashMap<StringName, GDScriptFunction *> &new_funcs = p_new_script->get_member_functions();
+	for (const KeyValue<StringName, HotReloadFunctionSig> &E : p_old.functions) {
+		const StringName &name = E.key;
+		const HotReloadFunctionSig &old_sig = E.value;
+		GDScriptFunction *const *new_func_ptr = new_funcs.getptr(name);
+		if (new_func_ptr == nullptr || *new_func_ptr == nullptr) {
+			String msg = vformat("Hot-reload: method '%s.%s()' was removed; existing callers will fail at runtime.", p_qualified_name, String(name));
+			_err_print_error("GDScriptCompiler::hot_reload", p_path.is_empty() ? "built-in" : (const char *)p_path.utf8().get_data(), 0, msg, false, ERR_HANDLER_WARNING);
+			continue;
+		}
+		const GDScriptFunction *new_func = *new_func_ptr;
+		int new_arg_count = new_func->get_argument_count();
+		int new_default_arg_count = new_func->get_method_info().default_arguments.size();
+		bool new_is_static = new_func->is_static();
+		bool new_is_vararg = new_func->is_vararg();
+
+		int old_required = old_sig.arg_count - old_sig.default_arg_count;
+		int new_required = new_arg_count - new_default_arg_count;
+		bool incompatible = false;
+		String reason;
+		if (new_is_static != old_sig.is_static) {
+			incompatible = true;
+			reason = old_sig.is_static ? "was static, now instance" : "was instance, now static";
+		} else if (new_is_vararg != old_sig.is_vararg) {
+			incompatible = true;
+			reason = "vararg-ness changed";
+		} else if (!new_is_vararg && (new_required > old_required || new_arg_count < old_required)) {
+			incompatible = true;
+			reason = vformat("required parameter count changed (%d -> %d, total %d -> %d)", old_required, new_required, old_sig.arg_count, new_arg_count);
+		}
+		if (incompatible) {
+			String msg = vformat("Hot-reload: method '%s.%s()' has an incompatible signature change (%s); existing callers may fail at runtime.", p_qualified_name, String(name), reason);
+			_err_print_error("GDScriptCompiler::hot_reload", p_path.is_empty() ? "built-in" : (const char *)p_path.utf8().get_data(), 0, msg, false, ERR_HANDLER_WARNING);
+		}
+	}
+	const HashMap<StringName, Ref<GDScript>> &new_subs = p_new_script->get_subclasses();
+	for (const KeyValue<StringName, HotReloadScriptSig> &E : p_old.subclasses) {
+		const Ref<GDScript> *sub = new_subs.getptr(E.key);
+		const String sub_qname = p_qualified_name + "." + String(E.key);
+		_warn_hot_reload_signature_changes(p_path, sub_qname, E.value, sub != nullptr ? sub->ptr() : nullptr);
+	}
+}
+} // namespace
+
 bool GDScriptCompiler::_is_class_member_property(CodeGen &codegen, const StringName &p_name) {
 	if (codegen.function_node && codegen.function_node->is_static) {
 		return false;
@@ -3291,6 +3377,12 @@ Error GDScriptCompiler::compile(const GDScriptParser *p_parser, GDScript *p_scri
 
 	ScriptLambdaInfo old_lambda_info = _get_script_lambda_replacement_info(p_script);
 
+	HotReloadScriptSig old_signatures;
+	const bool capture_old_sigs = p_keep_state && !p_script->get_member_functions().is_empty();
+	if (capture_old_sigs) {
+		old_signatures = _capture_hot_reload_signatures(p_script);
+	}
+
 	// Create scripts for subclasses beforehand so they can be referenced
 	make_scripts(p_script, root, p_keep_state);
 
@@ -3311,6 +3403,17 @@ Error GDScriptCompiler::compile(const GDScriptParser *p_parser, GDScript *p_scri
 	HashMap<GDScriptFunction *, GDScriptFunction *> func_ptr_replacements;
 	_get_function_ptr_replacements(func_ptr_replacements, old_lambda_info, &new_lambda_info);
 	main_script->_recurse_replace_function_ptrs(func_ptr_replacements);
+
+	if (capture_old_sigs) {
+		String qname = p_script->get_local_name();
+		if (qname.is_empty()) {
+			qname = p_script->get_path().get_file().get_basename();
+		}
+		if (qname.is_empty()) {
+			qname = "<anonymous>";
+		}
+		_warn_hot_reload_signature_changes(p_script->get_path(), qname, old_signatures, p_script);
+	}
 
 	if (has_static_data && !root->annotated_static_unload) {
 		GDScriptCache::add_static_script(p_script);

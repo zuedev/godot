@@ -2561,6 +2561,9 @@ void ScriptEditor::_reload_scripts(bool p_refresh_only) {
 				scr->set_source_code(rel_scr->get_source_code());
 				scr->reload(true);
 
+				// Also forward this change to the running game so live instances get patched.
+				trigger_live_script_reload(scr->get_path());
+
 				update_docs_from_script(scr);
 			}
 

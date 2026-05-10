@@ -980,6 +980,30 @@ void ScriptEditorDebugger::_msg_embed_next_frame(uint64_t p_thread_id, const Arr
 	emit_signal(SNAME("embed_shortcut_requested"), EMBED_NEXT_FRAME);
 }
 
+void ScriptEditorDebugger::_msg_scripts_reloaded(uint64_t p_thread_id, const Array &p_data) {
+	// Sent by the running game whenever the GDScript hot-reload pass finishes
+	// patching live scripts and re-binding their instances.
+	bool reload_all = false;
+	Array paths;
+	if (p_data.size() >= 1) {
+		reload_all = p_data[0];
+	}
+	if (p_data.size() >= 2) {
+		paths = p_data[1];
+	}
+	String summary;
+	if (reload_all) {
+		summary = TTR("Hot-reload: all scripts were re-applied to the running scene.");
+	} else if (paths.is_empty()) {
+		return;
+	} else if (paths.size() == 1) {
+		summary = vformat(TTR("Hot-reload: \"%s\" was re-applied to the running scene."), String(paths[0]));
+	} else {
+		summary = vformat(TTR("Hot-reload: %d scripts were re-applied to the running scene."), paths.size());
+	}
+	EditorNode::get_log()->add_message(summary, EditorLog::MSG_TYPE_EDITOR);
+}
+
 void ScriptEditorDebugger::_parse_message(const String &p_msg, uint64_t p_thread_id, const Array &p_data) {
 	emit_signal(SNAME("debug_data"), p_msg, p_data);
 
@@ -1034,6 +1058,7 @@ void ScriptEditorDebugger::_init_parse_message_handlers() {
 	parse_message_handlers["window:title"] = &ScriptEditorDebugger::_msg_window_title;
 	parse_message_handlers["request_embed_suspend_toggle"] = &ScriptEditorDebugger::_msg_embed_suspend_toggle;
 	parse_message_handlers["request_embed_next_frame"] = &ScriptEditorDebugger::_msg_embed_next_frame;
+	parse_message_handlers["scripts:reloaded"] = &ScriptEditorDebugger::_msg_scripts_reloaded;
 }
 
 void ScriptEditorDebugger::_set_reason_text(const String &p_reason, MessageType p_type) {
