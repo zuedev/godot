@@ -76,6 +76,10 @@ class SceneTreeDock : public EditorDock {
 		TOOL_MULTI_EDIT,
 		TOOL_ERASE,
 		TOOL_COPY_NODE_PATH,
+		TOOL_COPY_NODE_PATH_GDSCRIPT,
+		TOOL_COPY_NODE_PATH_GET_NODE,
+		TOOL_COPY_NODE_PATH_UNIQUE,
+		TOOL_COPY_NODE_PATH_ONREADY,
 		TOOL_SHOW_IN_FILE_SYSTEM,
 		TOOL_OPEN_DOCUMENTATION,
 		TOOL_AUTO_EXPAND,
@@ -173,6 +177,7 @@ class SceneTreeDock : public EditorDock {
 	PopupMenu *menu = nullptr;
 	PopupMenu *menu_subresources = nullptr;
 	PopupMenu *menu_properties = nullptr;
+	PopupMenu *menu_copy_node_path = nullptr;
 	ConfirmationDialog *clear_inherit_confirm = nullptr;
 
 	bool first_enter = true;

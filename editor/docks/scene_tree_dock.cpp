@@ -1287,7 +1287,11 @@ void SceneTreeDock::_tool_selected(int p_tool, bool p_confirm_override) {
 			new_scene_from_dialog->set_title(TTR("Save New Scene As..."));
 			new_scene_from_dialog->popup_file_dialog();
 		} break;
-		case TOOL_COPY_NODE_PATH: {
+		case TOOL_COPY_NODE_PATH:
+		case TOOL_COPY_NODE_PATH_GDSCRIPT:
+		case TOOL_COPY_NODE_PATH_GET_NODE:
+		case TOOL_COPY_NODE_PATH_UNIQUE:
+		case TOOL_COPY_NODE_PATH_ONREADY: {
 			const List<Node *> selection = editor_selection->get_top_selected_node_list();
 			const List<Node *>::Element *e = selection.front();
 			if (e) {
@@ -1295,7 +1299,49 @@ void SceneTreeDock::_tool_selected(int p_tool, bool p_confirm_override) {
 				if (node) {
 					Node *root = EditorNode::get_singleton()->get_edited_scene();
 					NodePath path = root->get_path().rel_path_to(node->get_path());
-					DisplayServer::get_singleton()->clipboard_set(String(path));
+					String path_str = String(path);
+					String result;
+					switch (p_tool) {
+						case TOOL_COPY_NODE_PATH_GDSCRIPT: {
+							result = "$" + path_str;
+						} break;
+						case TOOL_COPY_NODE_PATH_GET_NODE: {
+							result = "get_node(\"" + path_str.c_escape() + "\")";
+						} break;
+						case TOOL_COPY_NODE_PATH_UNIQUE: {
+							if (node->is_unique_name_in_owner()) {
+								result = "%" + String(node->get_name());
+							} else {
+								result = path_str;
+							}
+						} break;
+						case TOOL_COPY_NODE_PATH_ONREADY: {
+							String type_name;
+							Ref<Script> script_base = node->get_script();
+							while (script_base.is_valid()) {
+								type_name = script_base->get_global_name();
+								if (!type_name.is_empty()) {
+									break;
+								}
+								script_base = script_base->get_base_script();
+							}
+							if (type_name.is_empty()) {
+								type_name = node->get_class();
+							}
+							String var_name = String(node->get_name()).to_snake_case().validate_unicode_identifier();
+							String access;
+							if (node->is_unique_name_in_owner()) {
+								access = "%" + String(node->get_name());
+							} else {
+								access = "$" + path_str;
+							}
+							result = "@onready var " + var_name + ": " + type_name + " = " + access;
+						} break;
+						default: {
+							result = path_str;
+						} break;
+					}
+					DisplayServer::get_singleton()->clipboard_set(result);
 				}
 			}
 		} break;
@@ -4081,6 +4127,17 @@ void SceneTreeDock::_tree_rmb(const Vector2 &p_menu_pos) {
 		if (full_selection.size() == 1) {
 			BEGIN_SECTION()
 			menu->add_icon_shortcut(get_editor_theme_icon(SNAME("CopyNodePath")), ED_GET_SHORTCUT("scene_tree/copy_node_path"), TOOL_COPY_NODE_PATH);
+
+			Node *cp_node = full_selection.front()->get();
+			menu_copy_node_path->clear();
+			menu_copy_node_path->add_item(TTR("As $Path/To/Node (GDScript)"), TOOL_COPY_NODE_PATH_GDSCRIPT);
+			menu_copy_node_path->add_item(TTR("As get_node(\"Path/To/Node\")"), TOOL_COPY_NODE_PATH_GET_NODE);
+			if (cp_node->is_unique_name_in_owner()) {
+				menu_copy_node_path->add_item(TTR("As %UniqueName"), TOOL_COPY_NODE_PATH_UNIQUE);
+			}
+			menu_copy_node_path->add_item(TTR("As Typed @onready Variable"), TOOL_COPY_NODE_PATH_ONREADY);
+			menu_copy_node_path->reset_size();
+			menu->add_submenu_node_item(TTR("Copy Node Path As..."), menu_copy_node_path);
 			END_SECTION()
 		}
 	}
@@ -5182,6 +5239,10 @@ SceneTreeDock::SceneTreeDock(Node *p_scene_root, EditorSelection *p_editor_selec
 	menu_subresources = memnew(PopupMenu);
 	menu_subresources->connect(SceneStringName(id_pressed), callable_mp(this, &SceneTreeDock::_tool_selected).bind(false));
 	menu->add_child(menu_subresources);
+
+	menu_copy_node_path = memnew(PopupMenu);
+	menu_copy_node_path->connect(SceneStringName(id_pressed), callable_mp(this, &SceneTreeDock::_tool_selected).bind(false));
+	menu->add_child(menu_copy_node_path);
 
 	menu_properties = memnew(PopupMenu);
 	add_child(menu_properties);
